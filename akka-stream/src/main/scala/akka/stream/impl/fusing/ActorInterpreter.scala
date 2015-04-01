@@ -108,7 +108,7 @@ private[akka] class BatchingActorInputBoundary(val size: Int, val name: String)
     if (!upstreamCompleted) {
       upstreamCompleted = true
       // onUpstreamFinish is not back-pressured, stages need to deal with this
-      if (inputBufferElements == 0) enter().finish()
+      if (inputBufferElements == 0) enterAndFinish()
     }
 
   private def onSubscribe(subscription: Subscription): Unit = {
@@ -124,7 +124,7 @@ private[akka] class BatchingActorInputBoundary(val size: Int, val name: String)
 
   private def onError(e: Throwable): Unit = {
     upstreamCompleted = true
-    enter().fail(e)
+    enterAndFail(e)
   }
 
   private def waitingForUpstream: Actor.Receive = {
@@ -138,7 +138,7 @@ private[akka] class BatchingActorInputBoundary(val size: Int, val name: String)
       enqueue(element)
       if (downstreamWaiting) {
         downstreamWaiting = false
-        enter().push(dequeue())
+        enterAndPush(dequeue())
       }
 
     case OnComplete                ⇒ onComplete()
@@ -196,7 +196,7 @@ private[akka] class ActorOutputBoundary(val actor: ActorRef,
     if (upstreamWaiting) {
       burstRemaining = outputBurstLimit
       upstreamWaiting = false
-      enter().pull()
+      enterAndPull()
     }
 
   val subreceive = new SubReceive(waitingExposedPublisher)
@@ -266,7 +266,7 @@ private[akka] class ActorOutputBoundary(val actor: ActorRef,
       subscribePending(exposedPublisher.takePendingSubscribers())
     case RequestMore(subscription, elements) ⇒
       if (elements < 1) {
-        enter().finish()
+        enterAndFinish()
         fail(ReactiveStreamsCompliance.numberOfElementsInRequestMustBePositiveException)
       } else {
         downstreamDemand += elements
@@ -286,7 +286,7 @@ private[akka] class ActorOutputBoundary(val actor: ActorRef,
       downstreamCompleted = true
       subscriber = null
       exposedPublisher.shutdown(Some(new ActorPublisher.NormalShutdownException))
-      enter().finish()
+      enterAndFinish()
   }
 
 }
@@ -298,7 +298,7 @@ private[akka] object ActorInterpreter {
   def props(settings: ActorFlowMaterializerSettings, ops: Seq[Stage[_, _]], materializer: ActorFlowMaterializer): Props =
     Props(new ActorInterpreter(settings, ops, materializer))
 
-  case class AsyncInput(ctx: AsyncContext[Any, Any], event: Any)
+  case class AsyncInput(op: AsyncStage[Any, Any, Any], ctx: AsyncContext[Any, Any], event: Any)
 }
 
 /**
@@ -312,13 +312,16 @@ private[akka] class ActorInterpreter(val settings: ActorFlowMaterializerSettings
   private val downstream = new ActorOutputBoundary(self, settings.debugLogging, log, settings.outputBurstLimit)
   private val interpreter =
     new OneBoundedInterpreter(upstream +: ops :+ downstream,
-      (ctx, event) ⇒ self ! AsyncInput(ctx, event),
+      (op, ctx, event) ⇒ self ! AsyncInput(op, ctx, event),
       materializer,
       name = context.self.path.toString)
   interpreter.init()
 
   def receive: Receive = upstream.subreceive.orElse[Any, Unit](downstream.subreceive).orElse[Any, Unit] {
-    case AsyncInput(ctx, event) ⇒ ctx.enter(event)
+    case AsyncInput(op, ctx, event) ⇒
+      ctx.enter()
+      op.onAsyncInput(event, ctx)
+      ctx.execute()
   }
 
   override protected[akka] def aroundReceive(receive: Actor.Receive, msg: Any): Unit = {

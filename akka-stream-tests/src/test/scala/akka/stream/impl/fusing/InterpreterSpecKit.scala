@@ -59,7 +59,7 @@ trait InterpreterSpecKit extends AkkaSpec {
     val downstream = new DownstreamProbe
     val sidechannel = TestProbe()
     val interpreter = new OneBoundedInterpreter(upstream +: ops :+ downstream,
-      (ctx, event) ⇒ sidechannel.ref ! ActorInterpreter.AsyncInput(ctx, event),
+      (op, ctx, event) ⇒ sidechannel.ref ! ActorInterpreter.AsyncInput(op, ctx, event),
       ActorFlowMaterializer(),
       forkLimit, overflowToHeap)
     interpreter.init()
@@ -70,7 +70,7 @@ trait InterpreterSpecKit extends AkkaSpec {
       result
     }
 
-    class UpstreamProbe extends BoundaryStage {
+    private[akka] class UpstreamProbe extends BoundaryStage {
 
       override def onDownstreamFinish(ctx: BoundaryContext): TerminationDirective = {
         lastEvent += Cancel
@@ -88,13 +88,13 @@ trait InterpreterSpecKit extends AkkaSpec {
       override def onPush(elem: Any, ctx: BoundaryContext): Directive =
         throw new UnsupportedOperationException("Cannot push the boundary")
 
-      def onNext(elem: Any): Unit = enter().push(elem)
-      def onComplete(): Unit = enter().finish()
-      def onError(cause: Throwable): Unit = enter().fail(cause)
+      def onNext(elem: Any): Unit = enterAndPush(elem)
+      def onComplete(): Unit = enterAndFinish()
+      def onError(cause: Throwable): Unit = enterAndFail(cause)
 
     }
 
-    class DownstreamProbe extends BoundaryStage {
+    private[akka] class DownstreamProbe extends BoundaryStage {
       override def onPush(elem: Any, ctx: BoundaryContext): Directive = {
         lastEvent += OnNext(elem)
         ctx.exit()
@@ -113,9 +113,9 @@ trait InterpreterSpecKit extends AkkaSpec {
       override def onPull(ctx: BoundaryContext): Directive =
         throw new UnsupportedOperationException("Cannot pull the boundary")
 
-      def requestOne(): Unit = enter().pull()
+      def requestOne(): Unit = enterAndPull()
 
-      def cancel(): Unit = enter().finish()
+      def cancel(): Unit = enterAndFinish()
     }
 
   }

@@ -18,29 +18,6 @@ import akka.stream.FlowMaterializer
 
 /**
  * INTERNAL API
- *
- * `BoundaryStage` implementations are meant to communicate with the external world. These stages do not have most of the
- * safety properties enforced and should be used carefully. One important ability of BoundaryStages that they can take
- * off an execution signal by calling `ctx.exit()`. This is typically used immediately after an external signal has
- * been produced (for example an actor message). BoundaryStages can also kickstart execution by calling `enter()` which
- * returns a context they can use to inject signals into the interpreter. There is no checks in place to enforce that
- * the number of signals taken out by exit() and the number of signals returned via enter() are the same -- using this
- * stage type needs extra care from the implementer.
- *
- * BoundaryStages are the elements that make the interpreter *tick*, there is no other way to start the interpreter
- * than using a BoundaryStage.
- */
-private[akka] abstract class BoundaryStage extends AbstractStage[Any, Any, Directive, Directive, BoundaryContext] {
-  def enter(): BoundaryContext = context
-
-  final override def decide(t: Throwable): Supervision.Directive = Supervision.Stop
-
-  final override def restart(): BoundaryStage =
-    throw new UnsupportedOperationException("BoundaryStage doesn't support restart")
-}
-
-/**
- * INTERNAL API
  */
 private[akka] object OneBoundedInterpreter {
   final val Debug = false
@@ -145,7 +122,7 @@ private[akka] object OneBoundedInterpreter {
  * of the stack the heap is used.
  */
 private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
-                                          onAsyncInput: (AsyncContext[Any, Any], Any) ⇒ Unit,
+                                          onAsyncInput: (AsyncStage[Any, Any, Any], AsyncContext[Any, Any], Any) ⇒ Unit,
                                           materializer: FlowMaterializer,
                                           val forkLimit: Int = 100,
                                           val overflowToHeap: Boolean = true,
@@ -226,6 +203,11 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
   }
 
   private sealed trait State extends DetachedContext[Any] with BoundaryContext with AsyncContext[Any, Any] {
+
+    def enter(): Unit = throw new IllegalStateException("cannot enter an ordinary Context")
+
+    final def execute(): Unit = OneBoundedInterpreter.this.execute()
+
     final def progress(): Unit = {
       advance()
       if (inside) run()
@@ -292,7 +274,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       val current = currentOp.asInstanceOf[AsyncStage[Any, Any, Any]]
       val context = current.context // avoid concurrent access (to avoid @volatile)
       new AsyncCallback[Any] {
-        override def invoke(evt: Any): Unit = onAsyncInput(context, evt)
+        override def invoke(evt: Any): Unit = onAsyncInput(current, context, evt)
       }
     }
 
@@ -300,8 +282,6 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       if (!comingFromSide) throw new IllegalStateException("Can only ignore from onAsyncInput")
       exit()
     }
-
-    override def enter(evt: Any): Unit = ()
 
     override def finish(): FreeDirective = {
       fork(Completing)
@@ -645,71 +625,17 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
   private class EntryState(name: String, position: Int) extends State {
     val entryPoint = position
 
+    final override def enter(): Unit = {
+      activeOpIndex = entryPoint
+      if (Debug) println("    " * entryPoint + "ENTR")
+    }
+
     override def run(): Unit = ()
     override def advance(): Unit = ()
-
-    override def enter(evt: Any): Unit = {
-      activeOpIndex = entryPoint
-      (currentOp: Any) match {
-        case a: AsyncStage[Any, Any, Any] ⇒
-          if (Debug) println("    " * entryPoint + "-ai- " + evt)
-          a.onAsyncInput(evt, this)
-        case other ⇒ throw new IllegalStateException("cannot enter() a non-AsyncStage")
-      }
-    }
 
     override def comingFromUpstream = false
     override def comingFromDownstream = false
     override def comingFromSide = true
-
-    override def push(elem: Any): DownstreamDirective = {
-      activeOpIndex = entryPoint
-      super.push(elem)
-      execute()
-      null
-    }
-
-    override def pull(): UpstreamDirective = {
-      activeOpIndex = entryPoint
-      super.pull()
-      execute()
-      null
-    }
-
-    override def finish(): FreeDirective = {
-      activeOpIndex = entryPoint
-      super.finish()
-      execute()
-      null
-    }
-
-    override def fail(cause: Throwable): FreeDirective = {
-      activeOpIndex = entryPoint
-      super.fail(cause)
-      execute()
-      null
-    }
-
-    override def holdUpstream(): FreeDirective = {
-      activeOpIndex = entryPoint
-      super.holdUpstream()
-      execute()
-      null
-    }
-
-    override def holdDownstream(): FreeDirective = {
-      activeOpIndex = entryPoint
-      super.holdDownstream()
-      execute()
-      null
-    }
-
-    override def pushAndPull(elem: Any): FreeDirective = {
-      activeOpIndex = entryPoint
-      super.pushAndPull(elem)
-      execute()
-      null
-    }
 
     override def toString = s"$name($entryPoint)"
   }
@@ -723,7 +649,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       (pipeline(op): Any) match {
         case b: BoundaryStage ⇒
           b.context = new EntryState("boundary", op)
-        case a: AsyncStage[Any, Any, Any] ⇒
+        case a: AsyncStage[Any, Any, Any] @unchecked ⇒
           a.context = new EntryState("async", op)
           activeOpIndex = op
           a.initAsyncInput(a.context)

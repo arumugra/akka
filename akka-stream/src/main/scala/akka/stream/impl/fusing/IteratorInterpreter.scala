@@ -59,7 +59,7 @@ private[akka] object IteratorInterpreter {
 
     private def pullIfNeeded(): Unit = {
       if (needsPull) {
-        enter().pull() // will eventually result in a finish, or an onPush which exits
+        enterAndPull() // will eventually result in a finish, or an onPush which exits
       }
     }
 
@@ -96,7 +96,7 @@ private[akka] class IteratorInterpreter[I, O](val input: Iterator[I], val ops: S
   private val upstream = IteratorUpstream(input)
   private val downstream = IteratorDownstream[O]()
   private val interpreter = new OneBoundedInterpreter(upstream +: ops.asInstanceOf[Seq[Stage[_, _]]] :+ downstream,
-    (ctx, evt) ⇒ throw new UnsupportedOperationException("IteratorInterpreter is fully synchronous"),
+    (op, ctx, evt) ⇒ throw new UnsupportedOperationException("IteratorInterpreter is fully synchronous"),
     NoFlowMaterializer)
   interpreter.init()
 

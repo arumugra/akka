@@ -263,8 +263,8 @@ private[akka] object ActorProcessorFactory {
       case StageFactory(mkStage, _)   ⇒ (ActorInterpreter.props(settings, List(mkStage()), materializer), ())
       case TimerTransform(mkStage, _) ⇒ (TimerTransformerProcessorsImpl.props(settings, mkStage()), ())
       case MaterializingStageFactory(mkStageAndMat, _) ⇒
-        val (stage, mat) = mkStageAndMat()
-        (ActorInterpreter.props(settings, List(stage), materializer), mat)
+        val sm = mkStageAndMat()
+        (ActorInterpreter.props(settings, List(sm._1), materializer), sm._2)
       case DirectProcessor(p, m) ⇒ throw new AssertionError("DirectProcessor cannot end up in ActorProcessorFactory")
     }
   }

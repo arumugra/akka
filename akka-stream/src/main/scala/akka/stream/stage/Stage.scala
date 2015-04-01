@@ -55,6 +55,39 @@ private[stream] abstract class AbstractStage[-In, Out, PushD <: Directive, PullD
   private[stream] def isDetached: Boolean = false
 
   /**
+   * INTERNAL API
+   */
+  private[stream] def enterAndPush(elem: Out): Unit = {
+    context.enter()
+    context.push(elem)
+    context.execute()
+  }
+  /**
+   * INTERNAL API
+   */
+  private[stream] def enterAndPull(): Unit = {
+    context.enter()
+    context.pull()
+    context.execute()
+  }
+  /**
+   * INTERNAL API
+   */
+  private[stream] def enterAndFinish(): Unit = {
+    context.enter()
+    context.finish()
+    context.execute()
+  }
+  /**
+   * INTERNAL API
+   */
+  private[stream] def enterAndFail(e: Throwable): Unit = {
+    context.enter()
+    context.fail(e)
+    context.execute()
+  }
+
+  /**
    * `onPush` is called when an element from upstream is available and there is demand from downstream, i.e.
    * in `onPush` you are allowed to call [[akka.stream.stage.Context#push]] to emit one element downstreams,
    * or you can absorb the element by calling [[akka.stream.stage.Context#pull]]. Note that you can only
@@ -451,6 +484,27 @@ abstract class StatefulStage[In, Out] extends PushPullStage[In, Out] {
 }
 
 /**
+ * INTERNAL API
+ *
+ * `BoundaryStage` implementations are meant to communicate with the external world. These stages do not have most of the
+ * safety properties enforced and should be used carefully. One important ability of BoundaryStages that they can take
+ * off an execution signal by calling `ctx.exit()`. This is typically used immediately after an external signal has
+ * been produced (for example an actor message). BoundaryStages can also kickstart execution by calling `enter()` which
+ * returns a context they can use to inject signals into the interpreter. There is no checks in place to enforce that
+ * the number of signals taken out by exit() and the number of signals returned via enter() are the same -- using this
+ * stage type needs extra care from the implementer.
+ *
+ * BoundaryStages are the elements that make the interpreter *tick*, there is no other way to start the interpreter
+ * than using a BoundaryStage.
+ */
+private[akka] abstract class BoundaryStage extends AbstractStage[Any, Any, Directive, Directive, BoundaryContext] {
+  final override def decide(t: Throwable): Supervision.Directive = Supervision.Stop
+
+  final override def restart(): BoundaryStage =
+    throw new UnsupportedOperationException("BoundaryStage doesn't support restart")
+}
+
+/**
  * Return type from [[Context]] methods.
  */
 sealed trait Directive
@@ -466,6 +520,16 @@ sealed abstract class FreeDirective private () extends UpstreamDirective with Do
  * Passed to the callback methods of [[PushPullStage]] and [[StatefulStage]].
  */
 sealed trait Context[Out] {
+  /**
+   * INTERNAL API
+   */
+  private[stream] def enter(): Unit
+
+  /**
+   * INTERNAL API
+   */
+  private[stream] def execute(): Unit
+
   /**
    * Push one element to downstreams.
    */
@@ -552,10 +616,6 @@ trait AsyncCallback[T] {
  * notifications.
  */
 trait AsyncContext[Out, Ext] extends DetachedContext[Out] {
-  /**
-   * INTERNAL API.
-   */
-  private[stream] def enter(event: Ext): Unit
   /**
    * Obtain a callback object that can be used asynchronously to re-enter the
    * current [[AsyncStage]] with an asynchronous notification. After the
