@@ -3,7 +3,7 @@
  */
 package akka.stream.impl.fusing
 
-import scala.annotation.tailrec
+import scala.annotation.{ tailrec, switch }
 import scala.collection.breakOut
 import scala.util.control.NonFatal
 import akka.stream.stage._
@@ -239,7 +239,14 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
 
     protected def mustHave(b: Int): Unit =
       if (!hasBits(b)) {
-        throw new IllegalStateException
+        def format(b: Int) =
+          (b & BothBalls: @switch) match {
+            case 0              => "no balls"
+            case UpstreamBall   => "upstream ball"
+            case DownstreamBall => "downstream ball"
+            case BothBalls      => "upstream & downstream balls"
+          }
+        throw new IllegalStateException(s"operation requires ${format(b)} while holding ${format(currentOp.bits)} and receiving ${format(incomingBall)}")
       }
 
     override def push(elem: Any): DownstreamDirective = {

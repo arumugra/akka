@@ -378,10 +378,10 @@ private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Fut
   }
 
   override def onPull(ctx: AsyncContext[Out, (Int, Try[Out])]) = {
-    @tailrec def rec(hasConsumed: Boolean): DownstreamDirective =
+    @tailrec def rec(hasFreedUpSpace: Boolean): DownstreamDirective =
       if (elemsInFlight.isEmpty && ctx.isFinishing) ctx.finish()
       else if (elemsInFlight.isEmpty || elemsInFlight.peek == NotYetThere) {
-        if (hasConsumed && ctx.isHoldingUpstream) ctx.holdDownstreamAndPull()
+        if (hasFreedUpSpace && ctx.isHoldingUpstream) ctx.holdDownstreamAndPull()
         else ctx.holdDownstream()
       } else elemsInFlight.dequeue() match {
         case Failure(ex) ⇒ rec(true)
@@ -393,34 +393,34 @@ private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Fut
   }
 
   override def onAsyncInput(input: (Int, Try[Out]), ctx: AsyncContext[Out, Notification]) = {
-    @tailrec def rec(hasConsumed: Boolean): Directive =
+    @tailrec def rec(): Directive =
       if (elemsInFlight.isEmpty && ctx.isFinishing) ctx.finish()
       else if (elemsInFlight.isEmpty || elemsInFlight.peek == NotYetThere) ctx.ignore()
       else elemsInFlight.dequeue() match {
-        case Failure(ex) ⇒ rec(true)
+        case Failure(ex) ⇒ rec()
         case Success(elem) ⇒
           if (ctx.isHoldingUpstream) ctx.pushAndPull(elem)
           else ctx.push(elem)
       }
 
-    input._2 match {
-      case f @ Failure(ex) ⇒
+    input match {
+      case (idx, f @ Failure(ex)) ⇒
         if (decider(ex) != Supervision.Stop) {
-          elemsInFlight.put(input._1, f)
-          if (ctx.isHoldingDownstream) rec(false)
+          elemsInFlight.put(idx, f)
+          if (ctx.isHoldingDownstream) rec()
           else ctx.ignore()
         } else ctx.fail(ex)
-      case s: Success[_] ⇒
+      case (idx, s: Success[_]) ⇒
         try {
           ReactiveStreamsCompliance.requireNonNullElement(s.value)
-          elemsInFlight.put(input._1, s)
+          elemsInFlight.put(idx, s)
         } catch {
           case NonFatal(ex) ⇒
             if (decider(ex) != Supervision.Stop)
-              elemsInFlight.put(input._1, Failure(ex))
+              elemsInFlight.put(idx, Failure(ex))
             else ctx.fail(ex)
         }
-        if (ctx.isHoldingDownstream) rec(false)
+        if (ctx.isHoldingDownstream) rec()
         else ctx.ignore()
     }
   }

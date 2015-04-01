@@ -21,7 +21,8 @@ private[akka] object FixedSizeBuffer {
    * Returns a specialized instance for power-of-two sized buffers.
    */
   def apply[T](size: Int): FixedSizeBuffer[T] =
-    if (((size - 1) & size) == 0) new PowerOfTwoFixedSizeBuffer(size)
+    if (size < 1) throw new IllegalArgumentException("size must be positive")
+    else if (((size - 1) & size) == 0) new PowerOfTwoFixedSizeBuffer(size)
     else new ModuloFixedSizeBuffer(size)
 
   sealed abstract class FixedSizeBuffer[T](val size: Int) {

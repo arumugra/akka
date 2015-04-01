@@ -235,13 +235,15 @@ private[akka] object ActorProcessorFactory {
   import akka.stream.impl.Stages._
   import ActorFlowMaterializerImpl._
 
+  private val _identity = (x: Any) => x
+
   def props(materializer: ActorFlowMaterializerImpl, op: StageModule, parentAttributes: OperationAttributes): (Props, Any) = {
     val att = parentAttributes and op.attributes
     // USE THIS TO AVOID CLOSING OVER THE MATERIALIZER BELOW
     // Also, otherwise the attributes will not affect the settings properly!
     val settings = calcSettings(att)(materializer.settings)
     op match {
-      case Identity(_)                ⇒ (ActorInterpreter.props(settings, List(fusing.Map({ x: Any ⇒ x }, settings.supervisionDecider)), materializer), ())
+      case Identity(_)                ⇒ (ActorInterpreter.props(settings, List(fusing.Map(_identity, settings.supervisionDecider)), materializer), ())
       case Fused(ops, _)              ⇒ (ActorInterpreter.props(settings, ops, materializer), ())
       case Map(f, _)                  ⇒ (ActorInterpreter.props(settings, List(fusing.Map(f, settings.supervisionDecider)), materializer), ())
       case Filter(p, _)               ⇒ (ActorInterpreter.props(settings, List(fusing.Filter(p, settings.supervisionDecider)), materializer), ())

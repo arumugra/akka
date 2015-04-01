@@ -34,6 +34,7 @@ sealed trait Stage[-In, Out]
 private[stream] object AbstractStage {
   final val UpstreamBall = 1
   final val DownstreamBall = 2
+  final val BothBalls = UpstreamBall | DownstreamBall
   final val PrecedingWasPull = 0x4000
   final val TerminationPending = 0x8000
 }
