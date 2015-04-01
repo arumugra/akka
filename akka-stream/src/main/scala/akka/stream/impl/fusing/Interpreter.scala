@@ -128,6 +128,8 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
                                           val overflowToHeap: Boolean = true,
                                           val name: String = "") {
   import OneBoundedInterpreter._
+  import AbstractStage._
+
   type UntypedOp = AbstractStage[Any, Any, Directive, Directive, Context[Any]]
   require(ops.nonEmpty, "OneBoundedInterpreter cannot be created without at least one Op")
 
@@ -173,7 +175,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       case _: PushPullStage[_, _] ⇒ "pushpull"
       case _: DetachedStage[_, _] ⇒ "detached"
       case _                      ⇒ "other"
-    }) + s"(${o.holdingUpstream},${o.holdingDownstream},${o.terminationPending})"
+    }) + f"(${o.bits}%04X)"
   }
   override def toString =
     s"""|OneBoundedInterpreter($name)
@@ -203,7 +205,6 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
   }
 
   private sealed trait State extends DetachedContext[Any] with BoundaryContext with AsyncContext[Any, Any] {
-
     def enter(): Unit = throw new IllegalStateException("cannot enter an ordinary Context")
 
     final def execute(): Unit = OneBoundedInterpreter.this.execute()
@@ -228,30 +229,27 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     def run(): Unit
 
     /**
-     * This method shall return true iff this is a push-style state.
+     * This method shall return the bit set representing the incoming ball (if any).
      */
-    def comingFromUpstream: Boolean
+    def incomingBall: Int
 
-    /**
-     * This method shall return true iff this is a pull-style state.
-     */
-    def comingFromDownstream: Boolean
+    protected def hasBits(b: Int): Boolean = ((currentOp.bits | incomingBall) & b) == b
+    protected def addBits(b: Int): Unit = currentOp.bits |= b
+    protected def removeBits(b: Int): Unit = currentOp.bits &= ~b
 
-    /**
-     * This method shall return true iff this is an async entry (“from the side”).
-     */
-    def comingFromSide: Boolean
+    protected def mustHave(b: Int): Unit =
+      if (!hasBits(b)) {
+        throw new IllegalStateException
+      }
 
     override def push(elem: Any): DownstreamDirective = {
       ReactiveStreamsCompliance.requireNonNullElement(elem)
       if (currentOp.isDetached) {
-        if (comingFromUpstream)
-          throw new IllegalStateException("Cannot push during onPush, only pull or pushAndPull")
-        if (comingFromSide && !currentOp.holdingDownstream)
-          throw new IllegalStateException("Cannot push during onAsyncInput unless isHoldingDownstream")
+        if (incomingBall == UpstreamBall)
+          throw new IllegalStateException("Cannot push during onPush, only pull, pushAndPull or holdUpstreamAndPush")
+        mustHave(DownstreamBall)
       }
-      currentOp.precedingWasPull = false
-      currentOp.holdingDownstream = false
+      removeBits(PrecedingWasPull | DownstreamBall)
       elementInFlight = elem
       state = Pushing
       null
@@ -259,13 +257,12 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
 
     override def pull(): UpstreamDirective = {
       if (currentOp.isDetached) {
-        if (comingFromDownstream)
-          throw new IllegalStateException("Cannot pull during onPull, only push or pushAndPull")
-        if (comingFromSide && !currentOp.holdingUpstream)
-          throw new IllegalStateException("Cannot push during onAsyncInput unless isHoldingUpstream")
+        if (incomingBall == DownstreamBall)
+          throw new IllegalStateException("Cannot pull during onPull, only push, pushAndPull or holdDownstreamAndPull")
+        mustHave(UpstreamBall)
       }
-      currentOp.precedingWasPull = true
-      currentOp.holdingUpstream = false
+      removeBits(UpstreamBall)
+      addBits(PrecedingWasPull)
       state = Pulling
       null
     }
@@ -279,7 +276,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     override def ignore(): AsyncDirective = {
-      if (!comingFromSide) throw new IllegalStateException("Can only ignore from onAsyncInput")
+      if (incomingBall != 0) throw new IllegalStateException("Can only ignore from onAsyncInput")
       exit()
     }
 
@@ -289,18 +286,14 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       null
     }
 
-    def isFinishing: Boolean = currentOp.terminationPending
+    def isFinishing: Boolean = hasBits(TerminationPending)
 
     override def pushAndFinish(elem: Any): DownstreamDirective = {
       ReactiveStreamsCompliance.requireNonNullElement(elem)
       if (currentOp.isDetached) {
-        if (comingFromUpstream && !currentOp.holdingDownstream)
-          throw new IllegalStateException("Cannot push from onPush unless isHoldingDownstream")
-        if (comingFromSide && !currentOp.holdingDownstream)
-          throw new IllegalStateException("Cannot push from onAsyncInput unless isHoldingDownStream")
+        mustHave(DownstreamBall)
       }
-      currentOp.holdingDownstream = false
-      currentOp.precedingWasPull = false
+      removeBits(DownstreamBall | PrecedingWasPull)
       pipeline(activeOpIndex) = Finished.asInstanceOf[UntypedOp]
       // This MUST be an unsafeFork because the execution of PushFinish MUST strictly come before the finish execution
       // path. Other forks are not order dependent because they execute on isolated execution domains which cannot
@@ -320,61 +313,47 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     override def holdUpstream(): UpstreamDirective = {
-      currentOp.precedingWasPull = false
-      currentOp.holdingUpstream = true
+      removeBits(PrecedingWasPull)
+      addBits(UpstreamBall)
       exit()
     }
 
     override def holdUpstreamAndPush(elem: Any): UpstreamDirective = {
       ReactiveStreamsCompliance.requireNonNullElement(elem)
-      if (comingFromUpstream && !currentOp.holdingDownstream)
-        throw new IllegalStateException("Cannot holdUpstreamAndPush unless isHoldingDownstream")
-      if (comingFromDownstream)
-        throw new IllegalStateException("Cannot holdUpstreamAndPush during onPull")
-      if (comingFromSide)
-        throw new IllegalStateException("Cannot holdUpstreamAndPush during onAsyncInput")
-      currentOp.precedingWasPull = false
-      currentOp.holdingUpstream = true
-      currentOp.holdingDownstream = false
+      if (incomingBall != UpstreamBall)
+        throw new IllegalStateException("can only holdUpstreamAndPush from onPush")
+      mustHave(DownstreamBall)
+      removeBits(PrecedingWasPull | DownstreamBall)
+      addBits(UpstreamBall)
       elementInFlight = elem
       state = Pushing
       null
     }
 
-    override def isHoldingUpstream: Boolean = currentOp.holdingUpstream
+    override def isHoldingUpstream: Boolean = (currentOp.bits & UpstreamBall) != 0
 
     override def holdDownstream(): DownstreamDirective = {
-      currentOp.holdingDownstream = true
+      addBits(DownstreamBall)
       exit()
     }
 
     override def holdDownstreamAndPull(): DownstreamDirective = {
-      if (comingFromUpstream)
-        throw new IllegalStateException("Cannot holdDownstreamAndPull during onPush")
-      if (comingFromDownstream && !currentOp.holdingUpstream)
-        throw new IllegalStateException("Cannot holdDownstreamAndPull unless isHoldingUpstream")
-      if (comingFromSide)
-        throw new IllegalStateException("Cannot holdDownstreamAndPull during onAsyncInput")
-      currentOp.precedingWasPull = true
-      currentOp.holdingUpstream = false
-      currentOp.holdingDownstream = true
+      if (incomingBall != DownstreamBall)
+        throw new IllegalStateException("can only holdDownstreamAndPull from onPull")
+      mustHave(UpstreamBall)
+      addBits(PrecedingWasPull | DownstreamBall)
+      removeBits(UpstreamBall)
       state = Pulling
       null
     }
 
-    override def isHoldingDownstream: Boolean = currentOp.holdingDownstream
+    override def isHoldingDownstream: Boolean = (currentOp.bits & DownstreamBall) != 0
 
     override def pushAndPull(elem: Any): FreeDirective = {
       ReactiveStreamsCompliance.requireNonNullElement(elem)
-      if (comingFromUpstream && !currentOp.holdingDownstream)
-        throw new IllegalStateException("Cannot pushAndPull during onPush unless isHoldingDownstream")
-      if (comingFromDownstream && !currentOp.holdingUpstream)
-        throw new IllegalStateException("Cannot pushAndPull during onPull unless isHoldingUpstream")
-      if (comingFromSide && !(currentOp.holdingUpstream && currentOp.holdingDownstream))
-        throw new IllegalStateException("Cannot pushAndPull during onAsyncInput unless isHoldingBoth")
-      currentOp.precedingWasPull = true
-      currentOp.holdingUpstream = false
-      currentOp.holdingDownstream = false
+      mustHave(DownstreamBall | UpstreamBall)
+      addBits(PrecedingWasPull)
+      removeBits(DownstreamBall | UpstreamBall)
       fork(Pushing, elem)
       state = Pulling
       null
@@ -382,8 +361,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
 
     override def absorbTermination(): TerminationDirective = {
       updateJumpBacks(activeOpIndex)
-      currentOp.holdingUpstream = false
-      currentOp.holdingDownstream = false
+      removeBits(DownstreamBall | UpstreamBall)
       finish()
     }
 
@@ -400,11 +378,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
   private final val Pushing: State = new State {
     override def advance(): Unit = activeOpIndex += 1
     override def run(): Unit = currentOp.onPush(elementInFlight, ctx = this)
-
-    override def comingFromUpstream = true
-    override def comingFromDownstream = false
-    override def comingFromSide = false
-
+    override def incomingBall = UpstreamBall
     override def toString = "Pushing"
   }
 
@@ -424,9 +398,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       null
     }
 
-    override def comingFromUpstream = true
-    override def comingFromDownstream = false
-    override def comingFromSide = false
+    override def incomingBall = UpstreamBall
 
     override def toString = "PushFinish"
   }
@@ -439,9 +411,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
 
     override def run(): Unit = currentOp.onPull(ctx = this)
 
-    override def comingFromUpstream = false
-    override def comingFromDownstream = true
-    override def comingFromSide = false
+    override def incomingBall = DownstreamBall
 
     override def toString = "Pulling"
   }
@@ -454,8 +424,8 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     override def run(): Unit = {
-      if (!currentOp.terminationPending) currentOp.onUpstreamFinish(ctx = this)
-      else exit()
+      if (hasBits(TerminationPending)) exit()
+      else currentOp.onUpstreamFinish(ctx = this)
     }
 
     override def finish(): FreeDirective = {
@@ -464,19 +434,17 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     override def absorbTermination(): TerminationDirective = {
-      currentOp.terminationPending = true
-      currentOp.holdingUpstream = false
+      addBits(TerminationPending)
+      removeBits(UpstreamBall)
       updateJumpBacks(activeOpIndex)
-      if (currentOp.holdingDownstream || (!currentOp.isDetached && currentOp.precedingWasPull)) {
-        currentOp.holdingDownstream = false
+      if (hasBits(DownstreamBall) || (!currentOp.isDetached && hasBits(PrecedingWasPull))) {
+        removeBits(DownstreamBall)
         currentOp.onPull(ctx = Pulling)
       } else exit()
       null
     }
 
-    override def comingFromUpstream = true
-    override def comingFromDownstream = false
-    override def comingFromSide = false
+    override def incomingBall = UpstreamBall
 
     override def toString = "Completing"
   }
@@ -489,8 +457,8 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     def run(): Unit = {
-      if (!currentOp.terminationPending) currentOp.onDownstreamFinish(ctx = this)
-      else exit()
+      if (hasBits(TerminationPending)) exit()
+      else currentOp.onDownstreamFinish(ctx = this)
     }
 
     override def finish(): FreeDirective = {
@@ -498,9 +466,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       null
     }
 
-    override def comingFromUpstream = false
-    override def comingFromDownstream = true
-    override def comingFromSide = false
+    override def incomingBall = DownstreamBall
 
     override def toString = "Cancelling"
   }
@@ -515,19 +481,17 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     def run(): Unit = currentOp.onUpstreamFailure(cause, ctx = this)
 
     override def absorbTermination(): TerminationDirective = {
-      currentOp.terminationPending = true
-      currentOp.holdingUpstream = false
+      addBits(TerminationPending)
+      removeBits(UpstreamBall)
       updateJumpBacks(activeOpIndex)
-      if (currentOp.holdingDownstream || (!currentOp.isDetached && currentOp.precedingWasPull)) {
-        currentOp.holdingDownstream = false
+      if (hasBits(DownstreamBall) || (!currentOp.isDetached && hasBits(PrecedingWasPull))) {
+        removeBits(DownstreamBall)
         currentOp.onPull(ctx = Pulling)
       } else exit()
       null
     }
 
-    override def comingFromUpstream = true
-    override def comingFromDownstream = false
-    override def comingFromSide = false
+    override def incomingBall = UpstreamBall
   }
 
   private def inside: Boolean = activeOpIndex > -1 && activeOpIndex < pipeline.length
@@ -545,8 +509,7 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
       case Failing(e) ⇒ padding + s"---X ${e.getMessage} => ${decide(e)}"
       case other      ⇒ padding + s"---? $state"
     }
-    val holding = icon + (if (currentOp.holdingUpstream) 'U' else ' ') + (if (currentOp.holdingDownstream) 'D' else ' ')
-    println(f"$holding%-24s $name")
+    println(f"$icon%-24s $name")
   }
 
   @tailrec private def execute(): Unit = {
@@ -627,15 +590,16 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
 
     final override def enter(): Unit = {
       activeOpIndex = entryPoint
-      if (Debug) println("    " * entryPoint + "ENTR")
+      if (Debug) {
+        val s = "    " * entryPoint + "ENTR"
+        println(f"$s%-24s ${OneBoundedInterpreter.this.name}")
+      }
     }
 
     override def run(): Unit = ()
     override def advance(): Unit = ()
 
-    override def comingFromUpstream = false
-    override def comingFromDownstream = false
-    override def comingFromSide = true
+    override def incomingBall = 0
 
     override def toString = s"$name($entryPoint)"
   }

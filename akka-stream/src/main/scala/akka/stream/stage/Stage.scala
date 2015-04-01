@@ -28,27 +28,27 @@ import akka.stream.FlowMaterializer
  */
 sealed trait Stage[-In, Out]
 
-private[stream] abstract class AbstractStage[-In, Out, PushD <: Directive, PullD <: Directive, Ctx <: Context[Out]] extends Stage[In, Out] {
+/**
+ * INTERNAL API
+ */
+private[stream] object AbstractStage {
+  final val UpstreamBall = 1
+  final val DownstreamBall = 2
+  final val PrecedingWasPull = 0x4000
+  final val TerminationPending = 0x8000
+}
+
+abstract class AbstractStage[-In, Out, PushD <: Directive, PullD <: Directive, Ctx <: Context[Out]] extends Stage[In, Out] {
   /**
    * INTERNAL API
    */
-  private[stream] var holdingUpstream = false
-  /**
-   * INTERNAL API
-   */
-  private[stream] var holdingDownstream = false
-  /**
-   * INTERNAL API
-   */
-  private[stream] var precedingWasPull = false
-  /**
-   * INTERNAL API
-   */
-  private[stream] var terminationPending = false
+  private[stream] var bits = 0
+
   /**
    * INTERNAL API
    */
   private[stream] var context: Ctx = _
+
   /**
    * INTERNAL API
    */
@@ -62,6 +62,7 @@ private[stream] abstract class AbstractStage[-In, Out, PushD <: Directive, PullD
     context.push(elem)
     context.execute()
   }
+
   /**
    * INTERNAL API
    */
@@ -70,6 +71,7 @@ private[stream] abstract class AbstractStage[-In, Out, PushD <: Directive, PullD
     context.pull()
     context.execute()
   }
+
   /**
    * INTERNAL API
    */
@@ -78,6 +80,7 @@ private[stream] abstract class AbstractStage[-In, Out, PushD <: Directive, PullD
     context.finish()
     context.execute()
   }
+
   /**
    * INTERNAL API
    */
