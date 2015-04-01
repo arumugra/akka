@@ -343,8 +343,16 @@ private[akka] final case class Expand[In, Out, Seed](seed: In ⇒ Seed, extrapol
 /**
  * INTERNAL API
  */
+private[akka] object MapAsync {
+  val NotYetThere = Failure(new Exception)
+}
+
+/**
+ * INTERNAL API
+ */
 private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Future[Out], decider: Supervision.Decider)
   extends AsyncStage[In, Out, (Int, Try[Out])] {
+  import MapAsync._
 
   type Notification = (Int, Try[Out])
 
@@ -362,7 +370,7 @@ private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Fut
         case NonFatal(ex) if decider(ex) != Supervision.Stop ⇒ null // resume processing
       }
     if (future ne null) {
-      val idx = elemsInFlight.enqueue(null)
+      val idx = elemsInFlight.enqueue(NotYetThere)
       future.onComplete(t ⇒ callback.invoke((idx, t)))(akka.dispatch.ExecutionContexts.sameThreadExecutionContext)
     }
     if (elemsInFlight.isFull) ctx.holdUpstream()
@@ -372,7 +380,7 @@ private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Fut
   override def onPull(ctx: AsyncContext[Out, (Int, Try[Out])]) = {
     @tailrec def rec(hasConsumed: Boolean): DownstreamDirective =
       if (elemsInFlight.isEmpty && ctx.isFinishing) ctx.finish()
-      else if (elemsInFlight.isEmpty || elemsInFlight.peek == null) {
+      else if (elemsInFlight.isEmpty || elemsInFlight.peek == NotYetThere) {
         if (hasConsumed && ctx.isHoldingUpstream) ctx.holdDownstreamAndPull()
         else ctx.holdDownstream()
       } else elemsInFlight.dequeue() match {
@@ -387,7 +395,7 @@ private[akka] final case class MapAsync[In, Out](parallelism: Int, f: In ⇒ Fut
   override def onAsyncInput(input: (Int, Try[Out]), ctx: AsyncContext[Out, Notification]) = {
     @tailrec def rec(hasConsumed: Boolean): Directive =
       if (elemsInFlight.isEmpty && ctx.isFinishing) ctx.finish()
-      else if (elemsInFlight.isEmpty || elemsInFlight.peek == null) ctx.ignore()
+      else if (elemsInFlight.isEmpty || elemsInFlight.peek == NotYetThere) ctx.ignore()
       else elemsInFlight.dequeue() match {
         case Failure(ex) ⇒ rec(true)
         case Success(elem) ⇒

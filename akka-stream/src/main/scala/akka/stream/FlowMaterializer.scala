@@ -33,7 +33,10 @@ abstract class FlowMaterializer {
 
 }
 
-object NoFlowMaterializer extends FlowMaterializer {
+/**
+ * INTERNAL API
+ */
+private[akka] object NoFlowMaterializer extends FlowMaterializer {
   override def withNamePrefix(name: String): FlowMaterializer =
     throw new UnsupportedOperationException("NoFlowMaterializer cannot be named")
   override def materialize[Mat](runnable: Graph[ClosedShape, Mat]): Mat =

@@ -663,7 +663,6 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     override def comingFromSide = true
 
     override def push(elem: Any): DownstreamDirective = {
-      ReactiveStreamsCompliance.requireNonNullElement(elem)
       activeOpIndex = entryPoint
       super.push(elem)
       execute()
@@ -706,7 +705,6 @@ private[akka] class OneBoundedInterpreter(ops: Seq[Stage[_, _]],
     }
 
     override def pushAndPull(elem: Any): FreeDirective = {
-      ReactiveStreamsCompliance.requireNonNullElement(elem)
       activeOpIndex = entryPoint
       super.pushAndPull(elem)
       execute()

@@ -561,6 +561,8 @@ trait AsyncContext[Out, Ext] extends DetachedContext[Out] {
    * current [[AsyncStage]] with an asynchronous notification. After the
    * notification has been invoked, eventually [[AsyncStage#onAsyncInput]]
    * will be called with the given data item.
+   *
+   * This object can be cached and reused within the same [[AsyncStage]].
    */
   def getAsyncCallback(): AsyncCallback[Ext]
   /**

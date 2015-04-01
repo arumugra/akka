@@ -21,7 +21,6 @@ import scala.util.Try
 import scala.concurrent.ExecutionContext
 import scala.util.Failure
 import scala.util.Success
-import org.scalactic.ConversionCheckedTripleEquals
 
 object FlowMapAsyncSpec {
   class MapAsyncOne[In, Out](f: In ⇒ Future[Out])(implicit ec: ExecutionContext) extends AsyncStage[In, Out, Try[Out]] {
