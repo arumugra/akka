@@ -87,19 +87,19 @@ private[cluster] object InternalClusterAction {
   case object JoinSeedNode
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
   case object InitJoin extends ClusterMessage
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
   final case class InitJoinAck(address: Address) extends ClusterMessage
 
   /**
-   * @see JoinSeedNode
+   * see JoinSeedNode
    */
   @SerialVersionUID(1L)
   final case class InitJoinNack(address: Address) extends ClusterMessage
@@ -129,9 +129,11 @@ private[cluster] object InternalClusterAction {
 
   /**
    * Comand to [[akka.cluster.ClusterDaemon]] to create a
-   * [[akka.cluster.OnMemberUpListener]].
+   * [[akka.cluster.OnMemberStatusChangedListener]].
    */
   final case class AddOnMemberUpListener(callback: Runnable) extends NoSerializationVerificationNeeded
+
+  final case class AddOnMemberRemovedListener(callback: Runnable) extends NoSerializationVerificationNeeded
 
   sealed trait SubscriptionMessage
   final case class Subscribe(subscriber: ActorRef, initialStateMode: SubscriptionInitialStateMode, to: Set[Class[_]]) extends SubscriptionMessage
@@ -165,7 +167,9 @@ private[cluster] final class ClusterDaemon(settings: ClusterSettings) extends Ac
   def receive = {
     case msg: GetClusterCoreRef.type ⇒ coreSupervisor forward msg
     case AddOnMemberUpListener(code) ⇒
-      context.actorOf(Props(classOf[OnMemberUpListener], code).withDeploy(Deploy.local))
+      context.actorOf(Props(classOf[OnMemberStatusChangedListener], code, Up).withDeploy(Deploy.local))
+    case AddOnMemberRemovedListener(code) ⇒
+      context.actorOf(Props(classOf[OnMemberStatusChangedListener], code, Removed).withDeploy(Deploy.local))
     case PublisherCreated(publisher) ⇒
       if (settings.MetricsEnabled) {
         // metrics must be started after core/publisher to be able
@@ -235,6 +239,7 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   val statsEnabled = PublishStatsInterval.isFinite
   var gossipStats = GossipStats()
 
+  var seedNodes = SeedNodes
   var seedNodeProcess: Option[ActorRef] = None
   var seedNodeProcessCounter = 0 // for unique names
   var leaderActionCounter = 0
@@ -275,10 +280,10 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
       case _ ⇒ // auto-down is disabled
     }
 
-    if (SeedNodes.isEmpty)
+    if (seedNodes.isEmpty)
       logInfo("No seed-nodes configured, manual cluster join required")
     else
-      self ! JoinSeedNodes(SeedNodes)
+      self ! JoinSeedNodes(seedNodes)
   }
 
   override def postStop(): Unit = {
@@ -292,7 +297,7 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
   def uninitialized: Actor.Receive = {
     case InitJoin                          ⇒ sender() ! InitJoinNack(selfAddress)
     case ClusterUserAction.JoinTo(address) ⇒ join(address)
-    case JoinSeedNodes(seedNodes)          ⇒ joinSeedNodes(seedNodes)
+    case JoinSeedNodes(newSeedNodes)       ⇒ joinSeedNodes(newSeedNodes)
     case msg: SubscriptionMessage          ⇒ publisher forward msg
   }
 
@@ -302,14 +307,15 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
     case ClusterUserAction.JoinTo(address) ⇒
       becomeUninitialized()
       join(address)
-    case JoinSeedNodes(seedNodes) ⇒
+    case JoinSeedNodes(newSeedNodes) ⇒
       becomeUninitialized()
-      joinSeedNodes(seedNodes)
+      joinSeedNodes(newSeedNodes)
     case msg: SubscriptionMessage ⇒ publisher forward msg
     case _: Tick ⇒
       if (deadline.exists(_.isOverdue)) {
+        // join attempt failed, retry
         becomeUninitialized()
-        if (SeedNodes.nonEmpty) joinSeedNodes(SeedNodes)
+        if (seedNodes.nonEmpty) joinSeedNodes(seedNodes)
         else join(joinWith)
       }
   }
@@ -367,21 +373,22 @@ private[cluster] class ClusterCoreDaemon(publisher: ActorRef) extends Actor with
 
   def initJoin(): Unit = sender() ! InitJoinAck(selfAddress)
 
-  def joinSeedNodes(seedNodes: immutable.IndexedSeq[Address]): Unit = {
-    if (seedNodes.nonEmpty) {
+  def joinSeedNodes(newSeedNodes: immutable.IndexedSeq[Address]): Unit = {
+    if (newSeedNodes.nonEmpty) {
       stopSeedNodeProcess()
+      seedNodes = newSeedNodes // keep them for retry
       seedNodeProcess =
-        if (seedNodes == immutable.IndexedSeq(selfAddress)) {
+        if (newSeedNodes == immutable.IndexedSeq(selfAddress)) {
           self ! ClusterUserAction.JoinTo(selfAddress)
           None
         } else {
           // use unique name of this actor, stopSeedNodeProcess doesn't wait for termination
           seedNodeProcessCounter += 1
-          if (seedNodes.head == selfAddress) {
-            Some(context.actorOf(Props(classOf[FirstSeedNodeProcess], seedNodes).
+          if (newSeedNodes.head == selfAddress) {
+            Some(context.actorOf(Props(classOf[FirstSeedNodeProcess], newSeedNodes).
               withDispatcher(UseDispatcher), name = "firstSeedNodeProcess-" + seedNodeProcessCounter))
           } else {
-            Some(context.actorOf(Props(classOf[JoinSeedNodeProcess], seedNodes).
+            Some(context.actorOf(Props(classOf[JoinSeedNodeProcess], newSeedNodes).
               withDispatcher(UseDispatcher), name = "joinSeedNodeProcess-" + seedNodeProcessCounter))
           }
         }
@@ -1112,36 +1119,45 @@ private[cluster] final class JoinSeedNodeProcess(seedNodes: immutable.IndexedSeq
 /**
  * INTERNAL API
  *
- * The supplied callback will be run, once, when current cluster member is `Up`.
+ * The supplied callback will be run, once, when current cluster member come up with the same status.
  */
-private[cluster] class OnMemberUpListener(callback: Runnable) extends Actor with ActorLogging {
+private[cluster] class OnMemberStatusChangedListener(callback: Runnable, status: MemberStatus) extends Actor with ActorLogging {
   import ClusterEvent._
-  val cluster = Cluster(context.system)
-  // subscribe to MemberUp, re-subscribe when restart
+  private val cluster = Cluster(context.system)
+  private val to = status match {
+    case Up ⇒
+      classOf[MemberUp]
+    case Removed ⇒
+      classOf[MemberRemoved]
+  }
+
   override def preStart(): Unit =
-    cluster.subscribe(self, classOf[MemberUp])
+    cluster.subscribe(self, to)
   override def postStop(): Unit =
     cluster.unsubscribe(self)
 
   def receive = {
     case state: CurrentClusterState ⇒
-      if (state.members.exists(isSelfUp(_)))
+      if (state.members.exists(isTriggered))
         done()
-    case MemberUp(m) ⇒
-      if (isSelfUp(m))
+    case MemberUp(member) ⇒
+      if (isTriggered(member))
+        done()
+    case MemberRemoved(member, _) ⇒
+      if (isTriggered(member))
         done()
   }
 
-  def done(): Unit = {
+  private def done(): Unit = {
     try callback.run() catch {
-      case NonFatal(e) ⇒ log.error(e, "OnMemberUp callback failed with [{}]", e.getMessage)
+      case NonFatal(e) ⇒ log.error(e, "[{}] callback failed with [{}]", s"On${to.getSimpleName}", e.getMessage)
     } finally {
       context stop self
     }
   }
 
-  def isSelfUp(m: Member): Boolean =
-    m.uniqueAddress == cluster.selfUniqueAddress && m.status == MemberStatus.Up
+  private def isTriggered(m: Member): Boolean =
+    m.uniqueAddress == cluster.selfUniqueAddress && m.status == status
 
 }
 

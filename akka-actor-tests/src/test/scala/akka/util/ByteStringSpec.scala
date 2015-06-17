@@ -4,19 +4,19 @@
 
 package akka.util
 
-import org.scalatest.WordSpec
-import org.scalatest.Matchers
-import org.scalatest.prop.Checkers
-import org.scalacheck.Arbitrary
+import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream }
+import java.lang.Double.doubleToRawLongBits
+import java.lang.Float.floatToRawIntBits
+import java.nio.{ ByteBuffer, ByteOrder }
+import java.nio.ByteOrder.{ BIG_ENDIAN, LITTLE_ENDIAN }
+
+import org.apache.commons.codec.binary.Hex.encodeHex
 import org.scalacheck.Arbitrary.arbitrary
-import org.scalacheck.Gen
+import org.scalacheck.{ Arbitrary, Gen }
+import org.scalatest.{ Matchers, WordSpec }
+import org.scalatest.prop.Checkers
 
 import scala.collection.mutable.Builder
-
-import java.nio.{ ByteBuffer }
-import java.nio.ByteOrder, ByteOrder.{ BIG_ENDIAN, LITTLE_ENDIAN }
-import java.lang.Float.floatToRawIntBits
-import java.lang.Double.doubleToRawLongBits
 
 class ByteStringSpec extends WordSpec with Matchers with Checkers {
 
@@ -54,6 +54,23 @@ class ByteStringSpec extends WordSpec with Matchers with Checkers {
       from ← Gen.choose(0, xs.length)
       until ← Gen.choose(from, xs.length)
     } yield (xs, from, until)
+  }
+
+  def testSer(obj: AnyRef) = {
+    val os = new ByteArrayOutputStream
+    val bos = new ObjectOutputStream(os)
+    bos.writeObject(obj)
+    val arr = os.toByteArray
+    val is = new ObjectInputStream(new ByteArrayInputStream(arr))
+
+    is.readObject == obj
+  }
+
+  def hexFromSer(obj: AnyRef) = {
+    val os = new ByteArrayOutputStream
+    val bos = new ObjectOutputStream(os)
+    bos.writeObject(obj)
+    String valueOf encodeHex(os.toByteArray)
   }
 
   val arbitraryByteArray: Arbitrary[Array[Byte]] = Arbitrary { Gen.sized { n ⇒ Gen.containerOfN[Array, Byte](n, arbitrary[Byte]) } }
@@ -372,6 +389,22 @@ class ByteStringSpec extends WordSpec with Matchers with Checkers {
         }
       }
     }
+
+    "serialize correctly" when {
+      "parsing regular ByteString1C as compat" in {
+        val oldSerd = "aced000573720021616b6b612e7574696c2e42797465537472696e672442797465537472696e67314336e9eed0afcfe4a40200015b000562797465737400025b427872001b616b6b612e7574696c2e436f6d7061637442797465537472696e67fa2925150f93468f0200007870757200025b42acf317f8060854e002000078700000000a74657374737472696e67"
+        val bs = ByteString("teststring", "UTF8")
+        val str = hexFromSer(bs)
+
+        require(oldSerd == str)
+      }
+
+      "given all types of ByteString" in {
+        check { bs: ByteString ⇒
+          testSer(bs)
+        }
+      }
+    }
   }
 
   "A ByteStringIterator" must {
@@ -442,6 +475,24 @@ class ByteStringSpec extends WordSpec with Matchers with Checkers {
           input.getBytes(output, from, to - from)
           for (i ← to until bytes.length) output(i) = input.getByte
           (output.toSeq == bytes) && (input.isEmpty)
+        }
+      }
+
+      "getting Bytes with a given length" in {
+        check {
+          slice: ByteStringSlice ⇒
+            val (bytes, _, _) = slice
+            val input = bytes.iterator
+            (input.getBytes(bytes.length).toSeq == bytes) && input.isEmpty
+        }
+      }
+
+      "getting ByteString with a given length" in {
+        check {
+          slice: ByteStringSlice ⇒
+            val (bytes, _, _) = slice
+            val input = bytes.iterator
+            (input.getByteString(bytes.length) == bytes) && input.isEmpty
         }
       }
 

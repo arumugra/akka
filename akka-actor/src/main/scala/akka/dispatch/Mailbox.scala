@@ -11,10 +11,9 @@ import akka.actor.{ ActorCell, ActorRef, Cell, ActorSystem, InternalActorRef, De
 import akka.util.{ BoundedBlockingQueue, StablePriorityBlockingQueue, StablePriorityQueue, Unsafe }
 import akka.util.Helpers.ConfigOps
 import akka.event.Logging.Error
-import scala.concurrent.duration.Duration
-import scala.concurrent.duration.FiniteDuration
-import scala.annotation.tailrec
+import scala.concurrent.duration.{ Duration, FiniteDuration }
 import scala.concurrent.forkjoin.ForkJoinTask
+import scala.annotation.tailrec
 import scala.util.control.NonFatal
 import com.typesafe.config.Config
 import java.util.concurrent.atomic.AtomicInteger

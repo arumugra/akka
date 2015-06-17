@@ -1,24 +1,24 @@
 import com.typesafe.sbt.SbtMultiJvm
 import com.typesafe.sbt.SbtMultiJvm.MultiJvmKeys.MultiJvm
 
-val akkaVersion = "2.4-SNAPSHOT"
+val akkaVersion = "2.4-M1"
 
 val project = Project(
   id = "akka-sample-cluster-java",
   base = file("."),
   settings = Project.defaultSettings ++ SbtMultiJvm.multiJvmSettings ++ Seq(
     name := "akka-sample-cluster-java",
-    version := "2.4-SNAPSHOT",
-    scalaVersion := "2.11.5",
-    scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.6", "-deprecation", "-feature", "-unchecked", "-Xlog-reflective-calls", "-Xlint"),
-    javacOptions in Compile ++= Seq("-source", "1.6", "-target", "1.6", "-Xlint:unchecked", "-Xlint:deprecation"),
-    javacOptions in doc in Compile := Seq("-source", "1.6"), // javadoc does not support -target and -Xlint flags
+    version := "2.4-M1",
+    scalaVersion := "2.11.6",
+    scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.8", "-deprecation", "-feature", "-unchecked", "-Xlog-reflective-calls", "-Xlint"),
+    javacOptions in Compile ++= Seq("-source", "1.8", "-target", "1.8", "-Xlint:unchecked", "-Xlint:deprecation"),
+    javacOptions in doc in Compile := Seq("-source", "1.8", "-Xdoclint:none"),
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-actor" % akkaVersion,
       "com.typesafe.akka" %% "akka-remote" % akkaVersion,
       "com.typesafe.akka" %% "akka-cluster" % akkaVersion,
       "com.typesafe.akka" %% "akka-cluster-metrics" % akkaVersion,
-      "com.typesafe.akka" %% "akka-contrib" % akkaVersion,
+      "com.typesafe.akka" %% "akka-cluster-tools" % akkaVersion,
       "com.typesafe.akka" %% "akka-multi-node-testkit" % akkaVersion,
       "org.scalatest" %% "scalatest" % "2.2.1" % "test",
       "io.kamon" % "sigar-loader" % "1.6.5-rev001"),

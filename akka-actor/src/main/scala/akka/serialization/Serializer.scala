@@ -73,7 +73,7 @@ trait BaseSerializer extends Serializer {
   /**
    *  Actor system which is required by most serializer implementations.
    */
-  val system: ExtendedActorSystem
+  def system: ExtendedActorSystem
   /**
    * Configuration namespace of serialization identifiers in the `reference.conf`.
    *
@@ -88,7 +88,12 @@ trait BaseSerializer extends Serializer {
    *
    * See [[Serializer#identifier()]].
    */
-  final override val identifier: Int =
+  override val identifier: Int = identifierFromConfig
+
+  /**
+   * INTERNAL API
+   */
+  private[akka] def identifierFromConfig: Int =
     system.settings.config.getInt(s"""${SerializationIdentifiers}."${getClass.getName}"""")
 }
 
@@ -134,7 +139,6 @@ object JavaSerializer {
      *
      * @param value - the current value under the call to callable.call()
      * @param callable - the operation to be performed
-     * @tparam S - the return type
      * @return the result of callable.call()
      */
     def withValue[S](value: ExtendedActorSystem, callable: Callable[S]): S = super.withValue[S](value)(callable.call)
@@ -145,6 +149,14 @@ object JavaSerializer {
  * This Serializer uses standard Java Serialization
  */
 class JavaSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
+
+  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
+  def this() = this(null)
+
+  // TODO remove this when deprecated this() is removed
+  override val identifier: Int =
+    if (system eq null) 1
+    else identifierFromConfig
 
   def includeManifest: Boolean = false
 
@@ -180,6 +192,15 @@ class NullSerializer extends Serializer {
  * (just returns the byte array unchanged/uncopied)
  */
 class ByteArraySerializer(val system: ExtendedActorSystem) extends BaseSerializer {
+
+  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
+  def this() = this(null)
+
+  // TODO remove this when deprecated this() is removed
+  override val identifier: Int =
+    if (system eq null) 4
+    else identifierFromConfig
+
   def includeManifest: Boolean = false
   def toBinary(o: AnyRef) = o match {
     case null           ⇒ null

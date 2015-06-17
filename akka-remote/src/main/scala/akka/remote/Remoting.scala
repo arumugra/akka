@@ -231,7 +231,10 @@ private[remote] class Remoting(_system: ExtendedActorSystem, _provider: RemoteAc
   private[akka] def boundAddresses: Map[String, Set[Address]] = {
     transportMapping.map {
       case (scheme, transports) ⇒
-        scheme -> transports.map { case (transport, _) ⇒ transport.boundAddress }
+        scheme -> transports.flatMap {
+          // Need to do like this for binary compatibility reasons
+          case (t, _) ⇒ Option(t.boundAddress)
+        }
     }
   }
 }
@@ -624,6 +627,7 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
       pendingReadHandoffs.valuesIterator foreach (_.disassociate(AssociationHandle.Shutdown))
 
       // Ignore all other writes
+      normalShutdown = true
       context.become(flushing)
   }
 
@@ -769,8 +773,9 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
                              handleOption: Option[AkkaProtocolHandle],
                              writing: Boolean,
                              refuseUid: Option[Int]): ActorRef = {
-    assert(transportMapping contains localAddress)
-    assert(writing || refuseUid.isEmpty)
+    require(transportMapping contains localAddress, "Transport mapping is not defined for the address")
+    // refuseUid is ignored for read-only endpoints since the UID of the remote system is already known and has passed
+    // quarantine checks
 
     if (writing) context.watch(context.actorOf(RARP(extendedSystem).configureDispatcher(ReliableDeliverySupervisor.props(
       handleOption,
@@ -795,8 +800,21 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
       "endpointWriter-" + AddressUrlEncoder(remoteAddress) + "-" + endpointId.next()))
   }
 
+  private var normalShutdown = false
+
   override def postStop(): Unit = {
     pruneTimerCancellable.foreach { _.cancel() }
+    pendingReadHandoffs.valuesIterator foreach (_.disassociate(AssociationHandle.Shutdown))
+
+    if (!normalShutdown) {
+      // Remaining running endpoints are children, so they will clean up themselves.
+      // We still need to clean up any remaining transports because handles might be in mailboxes, and for example
+      // Netty is not part of the actor hierarchy, so its handles will not be cleaned up if no actor is taking
+      // responsibility of them (because they are sitting in a mailbox).
+      log.error("Remoting system has been terminated abrubtly. Attempting to shut down transports")
+      // The result of this shutdown is async, should we try to Await for a short duration?
+      transportMapping.values map (_.shutdown())
+    }
   }
 
 }

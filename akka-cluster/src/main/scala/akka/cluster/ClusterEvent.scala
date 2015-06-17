@@ -129,7 +129,7 @@ object ClusterEvent {
   }
 
   /**
-   * Member status changed to [[MemberStatus.Exiting]] and will be removed
+   * Member status changed to `MemberStatus.Exiting` and will be removed
    * when all members have seen the `Exiting` status.
    */
   final case class MemberExited(member: Member) extends MemberEvent {
@@ -170,6 +170,17 @@ object ClusterEvent {
      */
     def getLeader: Address = leader orNull
   }
+
+  /**
+   * This event is published when the cluster node is shutting down,
+   * before the final [[MemberRemoved]] events are published.
+   */
+  final case object ClusterShuttingDown extends ClusterDomainEvent
+
+  /**
+   * Java API: get the singleton instance of `ClusterShuttingDown` event
+   */
+  def getClusterShuttingDownInstance = ClusterShuttingDown
 
   /**
    * Marker interface to facilitate subscription of
@@ -328,6 +339,7 @@ private[cluster] final class ClusterDomainEventPublisher extends Actor with Acto
 
   override def postStop(): Unit = {
     // publish the final removed state before shutting down
+    publish(ClusterShuttingDown)
     publishChanges(Gossip.empty)
   }
 

@@ -27,11 +27,13 @@ object AkkaBuild extends Build {
 
   override def buildLoaders = BuildLoader.transform(Sample.buildTransformer) :: Nil
 
-  val enableMiMa = false
+  val enableMiMa = true
+
+  val parallelExecutionByDefault = false // TODO: enable this once we're sure it doesn not break things
 
   lazy val buildSettings = Seq(
     organization        := "com.typesafe.akka",
-    version             := "2.4-SNAPSHOT",
+    version             := "2.4-M1",
     scalaVersion        := Dependencies.Versions.scalaVersion,
     crossScalaVersions  := Dependencies.Versions.crossScala
   )
@@ -42,7 +44,7 @@ object AkkaBuild extends Build {
     settings = parentSettings ++ Release.settings ++ unidocSettings ++
       SphinxDoc.akkaSettings ++ Dist.settings ++ s3Settings ++ scaladocSettings ++
       GraphiteBuildEvents.settings ++ Protobuf.settings ++ Unidoc.settings(Seq(samples), Seq(remoteTests)) ++ Seq(
-      parallelExecution in GlobalScope := System.getProperty("akka.parallelExecution", "false").toBoolean,
+      parallelExecution in GlobalScope := System.getProperty("akka.parallelExecution", parallelExecutionByDefault.toString).toBoolean,
       Dist.distExclude := Seq(actorTests.id, docs.id, samples.id, osgi.id),
 
       S3.host in S3.upload := "downloads.typesafe.com.s3.amazonaws.com",
@@ -53,8 +55,8 @@ object AkkaBuild extends Build {
         archivesPathFinder.get.map(file => (file -> ("akka/" + file.getName)))
       }
     ),
-    aggregate = Seq(actor, testkit, actorTests, remote, remoteTests, camel, cluster, clusterMetrics, slf4j, agent,
-      persistence, persistenceTck, kernel, osgi, docs, contrib, samples, multiNodeTestkit, typed)
+    aggregate = Seq(actor, testkit, actorTests, remote, remoteTests, camel, cluster, clusterMetrics, clusterTools, clusterSharding,
+      slf4j, agent, persistence, persistenceTck, kernel, osgi, docs, contrib, samples, multiNodeTestkit, typed)
   )
 
   lazy val akkaScalaNightly = Project(
@@ -62,8 +64,8 @@ object AkkaBuild extends Build {
     base = file("akka-scala-nightly"),
     // remove dependencies that we have to build ourselves (Scala STM)
     // samples don't work with dbuild right now
-    aggregate = Seq(actor, testkit, actorTests, remote, remoteTests, camel, cluster, slf4j,
-      persistence, persistenceTck, kernel, osgi, contrib, multiNodeTestkit, typed)
+    aggregate = Seq(actor, testkit, actorTests, remote, remoteTests, camel, cluster, clusterMetrics, clusterTools, clusterSharding,
+      slf4j, persistence, persistenceTck, kernel, osgi, contrib, multiNodeTestkit, typed)
   ).disablePlugins(ValidatePullRequest)
 
   lazy val actor = Project(
@@ -92,7 +94,7 @@ object AkkaBuild extends Build {
   lazy val benchJmh = Project(
     id = "akka-bench-jmh",
     base = file("akka-bench-jmh"),
-    dependencies = Seq(actor, persistence, testkit).map(_ % "compile;compile->test;provided->test")
+    dependencies = Seq(actor, persistence, testkit).map(_ % "compile;compile->test;provided->provided")
   ).disablePlugins(ValidatePullRequest)
 
   lazy val remote = Project(
@@ -123,6 +125,19 @@ object AkkaBuild extends Build {
     id = "akka-cluster-metrics",
     base = file("akka-cluster-metrics"),
     dependencies = Seq(cluster % "compile->compile;test->test;multi-jvm->multi-jvm", slf4j % "test->compile")
+  ) configs (MultiJvm)
+
+  lazy val clusterTools = Project(
+    id = "akka-cluster-tools",
+    base = file("akka-cluster-tools"),
+    dependencies = Seq(cluster % "compile->compile;test->test;multi-jvm->multi-jvm")
+  ) configs (MultiJvm)
+  
+  lazy val clusterSharding = Project(
+    id = "akka-cluster-sharding",
+    base = file("akka-cluster-sharding"),
+    dependencies = Seq(cluster % "compile->compile;test->test;multi-jvm->multi-jvm", 
+        persistence % "compile;test->provided", clusterTools)
   ) configs (MultiJvm)
 
   lazy val slf4j = Project(
@@ -179,7 +194,7 @@ object AkkaBuild extends Build {
   lazy val contrib = Project(
     id = "akka-contrib",
     base = file("akka-contrib"),
-    dependencies = Seq(remote, remoteTests % "test->test", cluster, persistence % "compile;test->provided")
+    dependencies = Seq(remote, remoteTests % "test->test", cluster, clusterTools, persistence % "compile;test->provided")
   ) configs (MultiJvm)
 
   lazy val samples = Project(
@@ -188,9 +203,10 @@ object AkkaBuild extends Build {
     settings = parentSettings ++ ActivatorDist.settings,
     // FIXME osgiDiningHakkersSampleMavenTest temporarily removed from aggregate due to #16703
     aggregate = if (!CommandLineOptions.aggregateSamples) Nil else
-      Seq(sampleCamelJava, sampleCamelScala, sampleClusterJava, sampleClusterScala, sampleFsmScala,
-        sampleMainJava, sampleMainScala, sampleMultiNodeScala,
-        samplePersistenceJava, samplePersistenceScala, sampleRemoteJava, sampleRemoteScala)
+      Seq(sampleCamelJava, sampleCamelScala, sampleClusterJava, sampleClusterScala, sampleFsmScala, sampleFsmJavaLambda,
+        sampleMainJava, sampleMainScala, sampleMainJavaLambda, sampleMultiNodeScala,
+        samplePersistenceJava, samplePersistenceScala, samplePersistenceJavaLambda,
+        sampleRemoteJava, sampleRemoteScala, sampleSupervisionJavaLambda)
   )
 
   lazy val sampleCamelJava = Sample.project("akka-sample-camel-java")
@@ -200,17 +216,22 @@ object AkkaBuild extends Build {
   lazy val sampleClusterScala = Sample.project("akka-sample-cluster-scala")
 
   lazy val sampleFsmScala = Sample.project("akka-sample-fsm-scala")
+  lazy val sampleFsmJavaLambda = Sample.project("akka-sample-fsm-java-lambda")
 
   lazy val sampleMainJava = Sample.project("akka-sample-main-java")
   lazy val sampleMainScala = Sample.project("akka-sample-main-scala")
+  lazy val sampleMainJavaLambda = Sample.project("akka-sample-main-java-lambda")
 
   lazy val sampleMultiNodeScala = Sample.project("akka-sample-multi-node-scala")
 
   lazy val samplePersistenceJava = Sample.project("akka-sample-persistence-java")
   lazy val samplePersistenceScala = Sample.project("akka-sample-persistence-scala")
+  lazy val samplePersistenceJavaLambda = Sample.project("akka-sample-persistence-java-lambda")
 
   lazy val sampleRemoteJava = Sample.project("akka-sample-remote-java")
   lazy val sampleRemoteScala = Sample.project("akka-sample-remote-scala")
+  
+  lazy val sampleSupervisionJavaLambda = Sample.project("akka-sample-supervision-java-lambda")
 
   lazy val osgiDiningHakkersSampleMavenTest = Project(id = "akka-sample-osgi-dining-hakkers-maven-test",
     base = file("akka-samples/akka-sample-osgi-dining-hakkers-maven-test"),
@@ -290,13 +311,14 @@ object AkkaBuild extends Build {
   lazy val defaultSettings = baseSettings ++ resolverSettings ++ TestExtras.Filter.settings ++
     Protobuf.settings ++ Seq(
     // compile options
-    scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.6", "-feature", "-unchecked", "-Xlog-reflective-calls", "-Xlint"),
+    scalacOptions in Compile ++= Seq("-encoding", "UTF-8", "-target:jvm-1.8", "-feature", "-unchecked", "-Xlog-reflective-calls", "-Xlint"),
     scalacOptions in Compile ++= (if (allWarnings) Seq("-deprecation") else Nil),
-    scalacOptions in Test := (scalacOptions in Test).value.filterNot(_ == "-Xlog-reflective-calls"),
+    scalacOptions in Test := (scalacOptions in Test).value.filterNot(opt =>
+      opt == "-Xlog-reflective-calls" || opt.contains("genjavadoc")),
     // -XDignore.symbol.file suppresses sun.misc.Unsafe warnings
-    javacOptions in compile ++= Seq("-encoding", "UTF-8", "-source", "1.6", "-target", "1.6", "-Xlint:unchecked", "-XDignore.symbol.file"),
+    javacOptions in compile ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8", "-Xlint:unchecked", "-XDignore.symbol.file"),
     javacOptions in compile ++= (if (allWarnings) Seq("-Xlint:deprecation") else Nil),
-    javacOptions in doc ++= Seq("-encoding", "UTF-8", "-source", "1.6"),
+    javacOptions in doc ++= Seq("-encoding", "UTF-8", "-source", "1.8"),
     incOptions := incOptions.value.withNameHashing(true),
 
     crossVersion := CrossVersion.binary,
@@ -327,7 +349,7 @@ object AkkaBuild extends Build {
      * Test settings
      */
 
-    parallelExecution in Test := System.getProperty("akka.parallelExecution", "false").toBoolean,
+    parallelExecution in Test := System.getProperty("akka.parallelExecution", parallelExecutionByDefault.toString).toBoolean,
     logBuffered in Test := System.getProperty("akka.logBufferedTests", "false").toBoolean,
 
     // show full stack traces and test case durations
@@ -345,13 +367,7 @@ object AkkaBuild extends Build {
 
   def akkaPreviousArtifact(id: String): Def.Initialize[Option[sbt.ModuleID]] = Def.setting {
     if (enableMiMa) {
-      // Note: This is a little gross because we don't have a 2.3.0 release on Scala 2.11.x
-      // This should be expanded if there are more deviations.
-      val version: String =
-        scalaBinaryVersion.value match {
-          case "2.11" => "2.3.2"
-          case _ =>      "2.3.0"
-        }
+      val version: String = "2.3.11" // FIXME verify all 2.3.x versions
       val fullId = crossVersion.value match {
         case _ : CrossVersion.Binary => id + "_" + scalaBinaryVersion.value
         case _ : CrossVersion.Full => id + "_" + scalaVersion.value

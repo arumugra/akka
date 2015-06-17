@@ -88,28 +88,32 @@ seed nodes in the existing cluster.
 If you don't configure seed nodes you need to join the cluster programmatically or manually.
 
 Manual joining can be performed by using ref:`cluster_jmx_java` or :ref:`cluster_command_line_java`.
-Joining programatically can be performed with ``Cluster.get(system).join``.
+Joining programatically can be performed with ``Cluster.get(system).join``. Unsuccessful join attempts are 
+automatically retried after the time period defined in configuration property ``retry-unsuccessful-join-after``.
+Retries can be disabled by setting the property to ``off``.
 
 You can join to any node in the cluster. It does not have to be configured as a seed node.
 Note that you can only join to an existing cluster member, which means that for bootstrapping some
-node must join itself.
+node must join itself,and then the following nodes could join them to make up a cluster.
 
 You may also use ``Cluster.get(system).joinSeedNodes`` to join programmatically,
 which is attractive when dynamically discovering other nodes at startup by using some external tool or API.
 When using ``joinSeedNodes`` you should not include the node itself except for the node that is
 supposed to be the first seed node, and that should be placed first in parameter to ``joinSeedNodes``.
 
-Unsuccessful join attempts are automatically retried after the time period defined in 
-configuration property ``retry-unsuccessful-join-after``. When using ``seed-nodes`` this
-means that a new seed node is picked. When joining manually or programatically this means 
-that the last join request is retried. Retries can be disabled by setting the property to 
-``off``.
+Unsuccessful attempts to contact seed nodes are automatically retried after the time period defined in 
+configuration property ``seed-node-timeout``. Unsuccessful attempt to join a specific seed node is
+automatically retried after the configured ``retry-unsuccessful-join-after`. Retrying means that it
+tries to contact all seed nodes and then joins the node that answers first. The first node in the list
+of seed nodes will join itself if it cannot contact any of the other seed nodes within the
+configured ``seed-node-timeout``.
 
 An actor system can only join a cluster once. Additional attempts will be ignored.
 When it has successfully joined it must be restarted to be able to join another
 cluster or to join the same cluster again. It can use the same host name and port
-after the restart, but it must have been removed from the cluster before the join
-request is accepted.
+after the restart, when it come up as new incarnation of existing member in the cluster,
+trying to join in ,then the existing one will be removed from the cluster and then it will be allowed to join.
+
 
 .. _automatic-vs-manual-downing-java:
 
@@ -276,12 +280,23 @@ before the leader changes member status of 'Joining' members to 'Up'.
 .. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/resources/factorial.conf#role-min-nr-of-members
 
 You can start the actors in a ``registerOnMemberUp`` callback, which will 
-be invoked when the current member status is changed tp 'Up', i.e. the cluster
+be invoked when the current member status is changed to 'Up', i.e. the cluster
 has at least the defined number of members.
 
 .. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/FactorialFrontendMain.java#registerOnUp
 
 This callback can be used for other things than starting actors.
+
+You can do some clean up in a ``registerOnMemberRemoved`` callback, which will
+be invoked when the current member status is changed to 'Removed' or the cluster have been shutdown,i.e.
+terminate the actor system.
+
+.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/FactorialFrontendMain.java#registerOnRemoved
+
+.. note:: Register a OnMemberRemoved callback on a cluster that have been shutdown, the callback will be invoked immediately on
+   the caller thread, otherwise it will be invoked later when the current member status changed to 'Removed'. You may
+   want to install some cleanup handling after the cluster was started up,but the cluster might already be shutting
+   down when you installing, and depending on the race is not healthy.
 
 Cluster Singleton
 ^^^^^^^^^^^^^^^^^

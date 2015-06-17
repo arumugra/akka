@@ -4,8 +4,10 @@ Getting Started
 Prerequisites
 -------------
 
-Akka requires that you have `Java 1.6 <http://www.oracle.com/technetwork/java/javase/downloads/index.html>`_ or
+Akka requires that you have `Java 8 <http://www.oracle.com/technetwork/java/javase/downloads/index.html>`_ or
 later installed on you machine.
+
+`Typesafe <http://www.typesafe.com>`_ provides versions of Akka that are compatible with Java 6, 7 and 8.
 
 Getting Started Guides and Template Projects
 --------------------------------------------
@@ -33,8 +35,7 @@ Akka is very modular and consists of several JARs containing different features.
 
 - ``akka-cluster`` – Cluster membership management, elastic routers.
 
-- ``akka-osgi`` – base bundle for using Akka in OSGi containers, containing the
-  ``akka-actor`` classes
+- ``akka-osgi`` – utilities for using Akka in OSGi containers
 
 - ``akka-osgi-aries`` – Aries blueprint for provisioning actor systems
 
@@ -70,9 +71,7 @@ Using a snapshot version
 
 The Akka nightly snapshots are published to http://repo.akka.io/snapshots/ and are
 versioned with both ``SNAPSHOT`` and timestamps. You can choose a timestamped
-version to work with and can decide when to update to a newer version. The Akka
-snapshots repository is also proxied through https://repo.typesafe.com/typesafe/snapshots/
-which includes proxies for several other repositories that Akka modules depend on.
+version to work with and can decide when to update to a newer version.
 
 .. warning::
 
@@ -95,7 +94,6 @@ For Akka version 2.1-M2 and onwards:
 For previous Akka versions:
 
 `Akka Repo <http://repo.akka.io/releases/>`_
-`Typesafe Repo <https://repo.typesafe.com/typesafe/releases/>`_
 
 Using Akka with Maven
 ---------------------
